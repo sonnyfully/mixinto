@@ -24,10 +24,18 @@ class AudioBuffer:
     def to_mono(self) -> 'AudioBuffer':
         if self.meta.channels == 1:
             return self
+        # Average across channels (axis=1 for (samples, channels) format)
+        mono_samples = self.samples.mean(axis=1)
+        # Reshape to (samples, 1) to maintain 2D shape
+        if mono_samples.ndim == 1:
+            mono_samples = mono_samples.reshape(-1, 1)
+        # Create new metadata with channels=1
+        from dataclasses import replace
+        mono_meta = replace(self.meta, channels=1)
         return AudioBuffer(
-            samples=self.samples.mean(axis=1),
+            samples=mono_samples,
             sample_rate=self.sample_rate,
-            meta=self.meta
+            meta=mono_meta
         )
 
     def length_s(self) -> float:
@@ -92,6 +100,45 @@ class ExtendRequest(BaseModel):
         
         return self
 
+class AnalysisConfig(BaseModel):
+    """Configuration for audio analysis parameters."""
+    # Tempo detection
+    tempo_min: float = Field(default=60.0, ge=30.0, le=300.0)
+    tempo_max: float = Field(default=200.0, ge=30.0, le=300.0)
+    tempo_confidence_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+    onset_hop_length: int = Field(default=512, ge=64)
+    onset_frame_length: int = Field(default=2048, ge=256)
+    use_tempo_hints: bool = Field(default=True)
+    
+    # Intro detection
+    intro_min_bars: int = Field(default=8, ge=4)
+    intro_max_bars: int = Field(default=16, ge=8)
+    intro_candidate_bars: list[int] = Field(default_factory=lambda: [4, 8, 12, 16, 20])
+    intro_stability_weights: list[float] = Field(default_factory=lambda: [0.4, 0.4, 0.2])
+    change_point_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
+    
+    # Stability scoring
+    spectral_features: list[str] = Field(default_factory=lambda: ["chroma", "mfcc"])
+    stability_window_size_bars: float = Field(default=1.0, ge=0.25)
+    time_weight_decay: float = Field(default=0.9, ge=0.0, le=1.0)
+    rhythm_tempo_drift_threshold: float = Field(default=2.0, ge=0.0)
+    energy_variance_threshold: float = Field(default=0.2, ge=0.0, le=1.0)
+    
+    @model_validator(mode="after")
+    def validate_tempo_range(self) -> Self:
+        if self.tempo_min >= self.tempo_max:
+            raise ValueError("tempo_min must be less than tempo_max")
+        return self
+    
+    @model_validator(mode="after")
+    def validate_stability_weights(self) -> Self:
+        if len(self.intro_stability_weights) != 3:
+            raise ValueError("intro_stability_weights must have exactly 3 elements")
+        if abs(sum(self.intro_stability_weights) - 1.0) > 0.01:
+            raise ValueError("intro_stability_weights must sum to approximately 1.0")
+        return self
+
+
 class Preset(BaseModel):
     name: str
 
@@ -105,6 +152,8 @@ class Preset(BaseModel):
 
     export_format: str = "wav"
     normalize: bool = True
+    
+    analysis_config: AnalysisConfig = Field(default_factory=AnalysisConfig)
 
 
 

@@ -7,6 +7,8 @@ from typing import Any
 import typer
 from pydantic import ValidationError
 
+from mixinto.core import analyze_audio, extend_audio
+from mixinto.io.audio.writer import write_audio
 from mixinto.utils.types import ExtendRequest
 
 app = typer.Typer(
@@ -14,6 +16,107 @@ app = typer.Typer(
     add_completion=False,
     help="DJ-first tool that extends track intros into longer, mix-safe lead-ins.",
 )
+
+# Default directories relative to project root
+DEFAULT_INPUT_DIR = Path("input")
+DEFAULT_OUTPUT_DIR = Path("output")
+
+
+def get_project_root() -> Path:
+    """Get the project root directory."""
+    # Try to find project root by looking for pyproject.toml or setup.py
+    # Start from the cli.py file location and walk up
+    current = Path(__file__).resolve().parent
+    while current.parent != current:
+        if (current / "pyproject.toml").exists() or (current / "setup.py").exists():
+            return current
+        current = current.parent
+    
+    # Also try from current working directory
+    cwd = Path.cwd()
+    current = cwd
+    while current.parent != current:
+        if (current / "pyproject.toml").exists() or (current / "setup.py").exists():
+            return current
+        current = current.parent
+    
+    # Fallback to current working directory
+    return Path.cwd()
+
+
+def resolve_input_path(file_path: str | None) -> Path:
+    """
+    Resolve input file path, checking default input directory if path is relative.
+    
+    Args:
+        file_path: Input file path (can be None, relative, or absolute)
+    
+    Returns:
+        Resolved Path object
+    """
+    if file_path is None:
+        raise ValueError("Input file path is required")
+    
+    path = Path(file_path)
+    
+    # If absolute path, use as-is
+    if path.is_absolute():
+        return path
+    
+    # If relative path exists as-is, use it
+    if path.exists():
+        return path.resolve()
+    
+    # Otherwise, try in default input directory
+    project_root = get_project_root()
+    default_input = project_root / DEFAULT_INPUT_DIR / path
+    if default_input.exists():
+        return default_input.resolve()
+    
+    # Return the original path (will be validated later)
+    return path.resolve() if path.exists() else path
+
+
+def resolve_output_path(output_path: str | None, input_path: Path, suffix: str = "_extended") -> Path:
+    """
+    Resolve output file path, defaulting to output directory if not specified.
+    
+    Args:
+        output_path: Output file path (can be None, relative, or absolute)
+        input_path: Input file path (used to generate default output name)
+        suffix: Suffix to add to input filename for default output name
+    
+    Returns:
+        Resolved Path object
+    """
+    if output_path is None:
+        # Generate default output path
+        project_root = get_project_root()
+        default_output_dir = project_root / DEFAULT_OUTPUT_DIR
+        default_output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create output filename based on input filename
+        input_stem = input_path.stem
+        input_suffix = input_path.suffix or ".wav"
+        output_filename = f"{input_stem}{suffix}{input_suffix}"
+        return default_output_dir / output_filename
+    
+    path = Path(output_path)
+    
+    # If absolute path, use as-is
+    if path.is_absolute():
+        return path
+    
+    # If relative path, check if it's in output directory or use as-is
+    project_root = get_project_root()
+    default_output = project_root / DEFAULT_OUTPUT_DIR / path
+    
+    # If the path looks like just a filename, put it in output directory
+    if not path.parent or path.parent == Path("."):
+        return default_output.resolve()
+    
+    # Otherwise use the path as-is
+    return path.resolve()
 
 
 class ExitCode:
@@ -39,7 +142,7 @@ def write_json_report(data: dict[str, Any], output_path: str | None, pretty: boo
 
 @app.command()
 def analyze(
-    file: str = typer.Argument(..., help="The input audio file to analyze."),
+    file: str = typer.Argument(..., help="The input audio file to analyze. If relative, will check in 'input/' directory."),
     preset: str = typer.Option("dj_safe", "--preset", "-p", help="The preset name."),
     report: str | None = typer.Option(None, "--report", "-r", help="Output path for JSON report. If not specified, prints to stdout."),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output results as JSON (always enabled if --report is used)."),
@@ -50,7 +153,7 @@ def analyze(
     
     Returns analysis results including beat grid, intro profile, and mix safety metrics.
     """
-    input_path = Path(file)
+    input_path = resolve_input_path(file)
     
     # Validate input file exists
     if not input_path.exists():
@@ -62,37 +165,42 @@ def analyze(
         sys.exit(ExitCode.USER_ERROR)
     
     try:
-        # TODO: Implement actual analysis logic
-        # This is a placeholder structure
+        # Perform analysis
+        buffer, beat_grid, intro_profile = analyze_audio(
+            input_path,
+            preset_name=preset,
+        )
+        
+        # Build analysis result
         analysis_result = {
             "status": "success",
             "input_file": str(input_path),
             "preset": preset,
             "audio_metadata": {
-                "source_path": str(input_path),
-                "sample_rate": 44100,  # Placeholder
-                "channels": 2,  # Placeholder
-                "duration_s": 0.0,  # Placeholder
-                "format": "wav",  # Placeholder
+                "source_path": buffer.meta.source_path,
+                "sample_rate": buffer.meta.sample_rate,
+                "channels": buffer.meta.channels,
+                "duration_s": buffer.meta.duration_s,
+                "format": buffer.meta.format,
             },
             "beat_grid": {
-                "bpm": 0.0,  # Placeholder
-                "confidence": 0.0,  # Placeholder
-                "beats_count": 0,  # Placeholder
-                "downbeats_count": 0,  # Placeholder
+                "bpm": beat_grid.bpm,
+                "confidence": beat_grid.confidence,
+                "beats_count": len(beat_grid.beats_s),
+                "downbeats_count": len(beat_grid.downbeats_s),
             },
             "intro_profile": {
-                "start_s": 0.0,  # Placeholder
-                "end_s": 0.0,  # Placeholder
-                "energy_mean": 0.0,  # Placeholder
-                "energy_std": 0.0,  # Placeholder
-                "spectral_stability": 0.0,  # Placeholder
-                "rhythm_stability": 0.0,  # Placeholder
-                "vocal_presence": 0.0,  # Placeholder
-                "mix_safety_score": 0.0,  # Placeholder
-                "flags": [],
+                "start_s": intro_profile.start_s,
+                "end_s": intro_profile.end_s,
+                "energy_mean": intro_profile.energy_mean,
+                "energy_std": intro_profile.energy_std,
+                "spectral_stability": intro_profile.spectral_stability,
+                "rhythm_stability": intro_profile.rhythm_stability,
+                "vocal_presence": intro_profile.vocal_presence,
+                "mix_safety_score": intro_profile.mix_safety_score,
+                "flags": intro_profile.flags,
             },
-            "warnings": [],
+            "warnings": intro_profile.flags.copy(),
             "errors": [],
         }
         
@@ -100,10 +208,15 @@ def analyze(
         if json_output or report:
             write_json_report(analysis_result, report, pretty)
         else:
-            # Human-readable output (placeholder)
+            # Human-readable output
             typer.echo(f"Analysis complete for: {input_path}")
             typer.echo(f"Preset: {preset}")
-            # TODO: Add formatted human-readable output
+            typer.echo(f"BPM: {beat_grid.bpm:.1f} (confidence: {beat_grid.confidence:.2f})")
+            typer.echo(f"Beats: {len(beat_grid.beats_s)}, Downbeats: {len(beat_grid.downbeats_s)}")
+            typer.echo(f"Intro window: {intro_profile.start_s:.2f}s - {intro_profile.end_s:.2f}s")
+            typer.echo(f"Mix safety score: {intro_profile.mix_safety_score:.2f}")
+            if intro_profile.flags:
+                typer.echo(f"Flags: {', '.join(intro_profile.flags)}")
         
         sys.exit(ExitCode.SUCCESS)
         
@@ -117,8 +230,8 @@ def analyze(
 
 @app.command()
 def extend(
-    file: str = typer.Argument(..., help="The input audio file to extend."),
-    output: str = typer.Option(..., "--out", "-o", help="Output path for the extended audio file."),
+    file: str = typer.Argument(..., help="The input audio file to extend. If relative, will check in 'input/' directory."),
+    output: str | None = typer.Option(None, "--out", "-o", help="Output path for the extended audio file. If not specified, defaults to 'output/{input_filename}_extended.wav'."),
     bars: int | None = typer.Option(None, "--bars", "-b", help="Number of bars to extend the intro by."),
     seconds: float | None = typer.Option(None, "--seconds", "-s", help="Number of seconds to extend the intro by."),
     preset: str = typer.Option("dj_safe", "--preset", "-p", help="The preset name."),
@@ -134,8 +247,8 @@ def extend(
     Generates new intro bars that preserve the track's tempo, groove, timbre, and energy
     while adding time you can comfortably mix into.
     """
-    input_path = Path(file)
-    output_path = Path(output)
+    input_path = resolve_input_path(file)
+    output_path = resolve_output_path(output, input_path)
     
     # Validate input file exists
     if not input_path.exists():
@@ -172,8 +285,47 @@ def extend(
             dry_run=dry_run,
         )
         
-        # TODO: Implement actual extension logic
-        # This is a placeholder structure
+        # Perform extension
+        extended_buffer, metrics = extend_audio(extend_request)
+        
+        # Check if extension was refused
+        if metrics.get("refused", False):
+            extension_result = {
+                "status": "refused",
+                "input_file": str(input_path),
+                "output_file": str(output_path),
+                "preset": preset,
+                "target_bars": bars,
+                "target_seconds": seconds,
+                "extended": False,
+                "refused": True,
+                "refusal_reason": metrics.get("refusal_reason", "Track not safe to extend"),
+                "warnings": metrics.get("warnings", []),
+                "errors": metrics.get("errors", []),
+                "metrics": {
+                    "original_duration_s": metrics.get("original_duration_s", 0.0),
+                    "extended_duration_s": metrics.get("extended_duration_s", 0.0),
+                    "bars_added": 0,
+                    "mix_safety_score": metrics.get("mix_safety_score", 0.0),
+                    "seam_quality": metrics.get("seam_quality", 0.0),
+                },
+            }
+            
+            # Output refusal report
+            if json_output or report:
+                write_json_report(extension_result, report, pretty)
+            else:
+                typer.echo(f"Extension refused: {metrics.get('refusal_reason', 'Unknown reason')}", err=True)
+            
+            sys.exit(ExitCode.REFUSED)
+        
+        # Success case - generate output
+        if not dry_run:
+            # Write extended audio file
+            write_audio(extended_buffer, output_path, format="wav")
+            typer.echo(f"Extended audio written to: {output_path}")
+        
+        # Build success result
         extension_result = {
             "status": "success",
             "input_file": str(input_path),
@@ -184,43 +336,16 @@ def extend(
             "extended": True,
             "refused": False,
             "refusal_reason": None,
-            "warnings": [],
-            "errors": [],
+            "warnings": metrics.get("warnings", []),
+            "errors": metrics.get("errors", []),
             "metrics": {
-                "original_duration_s": 0.0,  # Placeholder
-                "extended_duration_s": 0.0,  # Placeholder
-                "bars_added": bars if bars else 0,  # Placeholder
-                "mix_safety_score": 0.0,  # Placeholder
-                "seam_quality": 0.0,  # Placeholder
+                "original_duration_s": metrics.get("original_duration_s", 0.0),
+                "extended_duration_s": metrics.get("extended_duration_s", 0.0),
+                "bars_added": metrics.get("bars_added", 0),
+                "mix_safety_score": metrics.get("mix_safety_score", 0.0),
+                "seam_quality": metrics.get("seam_quality", 0.0),
             },
         }
-        
-        # Simulate refusal scenario (placeholder logic)
-        # In real implementation, this would be based on actual analysis
-        refused = False
-        refusal_reason = None
-        
-        if refused:
-            extension_result["status"] = "refused"
-            extension_result["extended"] = False
-            extension_result["refused"] = True
-            extension_result["refusal_reason"] = refusal_reason or "Track not safe to extend"
-            
-            # Output refusal report
-            if json_output or report:
-                write_json_report(extension_result, report, pretty)
-            else:
-                typer.echo(f"Extension refused: {refusal_reason}", err=True)
-            
-            sys.exit(ExitCode.REFUSED)
-        
-        # Success case - generate output
-        if not dry_run:
-            # TODO: Actually generate the extended audio file
-            # For now, just create the output directory structure
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            # Placeholder: would write actual audio file here
-            typer.echo(f"Extended audio written to: {output_path}")
         
         # Output success report
         if json_output or report:
@@ -231,6 +356,7 @@ def extend(
                 typer.echo(f"Added {bars} bars")
             if seconds:
                 typer.echo(f"Added {seconds} seconds")
+            typer.echo(f"Mix safety score: {metrics.get('mix_safety_score', 0.0):.2f}")
         
         # Confirm output path
         if not dry_run and output_path.exists():
