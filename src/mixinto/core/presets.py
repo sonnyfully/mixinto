@@ -45,6 +45,28 @@ PRESETS: dict[str, Preset] = {
             intro_max_bars=16,
         ),
     ),
+    "more_motion": Preset(
+        name="more_motion",
+        min_mix_safety_score=0.5,
+        max_vocal_presence=0.5,
+        min_beat_confidence=0.5,
+        method="loop",
+        max_seam_error_ms=25.0,
+        export_format="wav",
+        normalize=True,
+        analysis_config=AnalysisConfig(),  # Uses defaults
+    ),
+    "no_vocals": Preset(
+        name="no_vocals",
+        min_mix_safety_score=0.5,
+        max_vocal_presence=0.2,  # Stricter vocal limit
+        min_beat_confidence=0.5,
+        method="loop",
+        max_seam_error_ms=25.0,
+        export_format="wav",
+        normalize=True,
+        analysis_config=AnalysisConfig(),  # Uses defaults
+    ),
 }
 
 

@@ -27,18 +27,17 @@ def calculate_spectral_stability(
     mono_buffer = buffer.to_mono()
     samples = mono_buffer.samples.flatten()
     
-    # Calculate window size in samples based on bars
-    seconds_per_bar = 4.0 * (60.0 / 120.0)  # Assume 120 BPM for window calculation
-    window_samples = int(config.stability_window_size_bars * seconds_per_bar * buffer.sample_rate)
-    hop_length = window_samples // 4
+    # Use consistent hop_length from config (ensure it's valid)
+    hop_length = max(64, config.onset_hop_length)  # Ensure minimum hop_length
+    n_fft = config.onset_frame_length
     
     stability_scores = []
     
-    # Use multiple spectral features for better stability assessment
     if "chroma" in config.spectral_features:
         chroma = librosa.feature.chroma_stft(
             y=samples,
             sr=buffer.sample_rate,
+            n_fft=n_fft,
             hop_length=hop_length,
         )
         # Calculate stability as inverse of variance across time
@@ -48,11 +47,15 @@ def calculate_spectral_stability(
         stability_scores.append(chroma_stability)
     
     if "mfcc" in config.spectral_features:
+        # mfcc accepts n_fft and hop_length via **kwargs to melspectrogram
+        # But we need to be careful - only pass valid melspectrogram parameters
         mfcc = librosa.feature.mfcc(
             y=samples,
             sr=buffer.sample_rate,
+            n_fft=n_fft,
             hop_length=hop_length,
             n_mfcc=13,
+            # Explicitly don't pass frame_length - mfcc/melspectrogram use n_fft
         )
         # Use first few MFCCs (more stable) for stability calculation
         mfcc_stable = mfcc[:6, :]  # First 6 MFCCs
@@ -62,6 +65,8 @@ def calculate_spectral_stability(
         stability_scores.append(mfcc_stability)
     
     if "tonnetz" in config.spectral_features:
+        # tonnetz uses chroma_cqt internally, which doesn't use n_fft
+        # It accepts hop_length and other CQT parameters via **kwargs
         tonnetz = librosa.feature.tonnetz(
             y=samples,
             sr=buffer.sample_rate,

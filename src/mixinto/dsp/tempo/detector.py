@@ -38,11 +38,15 @@ def detect_tempo(
         samples = samples.flatten()
     
     # Calculate onset strength with configurable parameters
+    # onset_strength accepts both frame_length (for RMS) and n_fft (for melspectrogram)
+    # But we need to be careful - frame_length might get passed to melspectrogram incorrectly
+    # So we'll use n_fft for the spectral part and let frame_length default
     onset_strength = librosa.onset.onset_strength(
         y=samples,
         sr=buffer.sample_rate,
         hop_length=config.onset_hop_length,
-        frame_length=config.onset_frame_length,
+        n_fft=config.onset_frame_length,  # Use n_fft for spectral analysis
+        # Don't pass frame_length - it might conflict with melspectrogram
     )
     
     # Use librosa's tempo estimation with onset strength

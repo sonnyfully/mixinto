@@ -1,5 +1,6 @@
 """CLI interface for mixinto."""
 import json
+import random
 import sys
 from pathlib import Path
 from typing import Any
@@ -235,6 +236,8 @@ def extend(
     bars: int | None = typer.Option(None, "--bars", "-b", help="Number of bars to extend the intro by."),
     seconds: float | None = typer.Option(None, "--seconds", "-s", help="Number of seconds to extend the intro by."),
     preset: str = typer.Option("dj_safe", "--preset", "-p", help="The preset name."),
+    backend: str = typer.Option("baseline", "--backend", help="Generation backend (baseline, loop)."),
+    seed: str = typer.Option("0", "--seed", help="Random seed for deterministic generation. Use 'random' for a random seed."),
     report: str | None = typer.Option(None, "--report", "-r", help="Output path for JSON report."),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output results as JSON (always enabled if --report is used)."),
     pretty: bool = typer.Option(True, "--pretty/--no-pretty", help="Pretty print JSON output."),
@@ -273,6 +276,17 @@ def extend(
         typer.echo(f"Error: Output file already exists: {output_path}. Use --overwrite to replace it.", err=True)
         sys.exit(ExitCode.USER_ERROR)
     
+    # Handle seed: convert "random" to random int, or parse as int
+    if seed.lower() == "random":
+        actual_seed = random.randint(0, 2**31 - 1)
+        typer.echo(f"Using random seed: {actual_seed}", err=True)
+    else:
+        try:
+            actual_seed = int(seed)
+        except ValueError:
+            typer.echo(f"Error: Invalid seed value '{seed}'. Must be an integer or 'random'.", err=True)
+            sys.exit(ExitCode.USER_ERROR)
+    
     try:
         # Validate request using Pydantic model
         extend_request = ExtendRequest(
@@ -283,6 +297,8 @@ def extend(
             target_seconds=seconds,
             overwrite=overwrite,
             dry_run=dry_run,
+            backend=backend,
+            seed=actual_seed,
         )
         
         # Perform extension
@@ -331,6 +347,9 @@ def extend(
             "input_file": str(input_path),
             "output_file": str(output_path),
             "preset": preset,
+            "backend": backend,
+            "seed": actual_seed,
+            "seed_input": seed,  # Include original input for reference
             "target_bars": bars,
             "target_seconds": seconds,
             "extended": True,
@@ -346,6 +365,10 @@ def extend(
                 "seam_quality": metrics.get("seam_quality", 0.0),
             },
         }
+        
+        # Add bassline metadata if present
+        if "bassline" in metrics:
+            extension_result["bassline"] = metrics["bassline"]
         
         # Output success report
         if json_output or report:

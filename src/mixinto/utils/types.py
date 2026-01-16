@@ -86,6 +86,8 @@ class ExtendRequest(BaseModel):
     dry_run: bool = False
     overwrite: bool = False
     force_bpm: float | None = Field(default=None, ge=0)
+    backend: str = Field(default="baseline", description="Generation backend (baseline, loop)")
+    seed: int = Field(default=0, description="Random seed for deterministic generation")
 
     @model_validator(mode="after")
     def check_target(self) -> Self:

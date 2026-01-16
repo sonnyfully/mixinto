@@ -43,6 +43,7 @@ def build_beat_grid(
     tempo = float(bpm)
     
     # Get onset strength
+    # Use default parameters (onset_strength doesn't need custom frame_length)
     onset_strength = librosa.onset.onset_strength(
         y=samples,
         sr=buffer.sample_rate,

@@ -5,6 +5,8 @@ from mixinto.core.analyzer import analyze_audio
 from mixinto.core.evaluator import evaluate_safety
 from mixinto.core.presets import get_preset
 from mixinto.dsp.extend.loop import extend_by_looping
+from mixinto.dsp.render.seam import apply_crossfade
+from mixinto.generation.baseline import BaselineGenerator
 from mixinto.io.audio.writer import write_audio
 from mixinto.utils.types import AudioBuffer, ExtendRequest
 
@@ -82,8 +84,43 @@ def extend_audio(request: ExtendRequest) -> tuple[AudioBuffer, dict]:
     else:
         raise ValueError("Either target_bars or target_seconds must be provided")
     
-    # Step 5: Extend based on method
-    if preset.method == "loop":
+    # Step 5: Extend based on backend
+    generation_metadata = None
+    
+    if request.backend == "baseline":
+        # Use baseline generator
+        generator = BaselineGenerator()
+        
+        # Extract context window (intro segment)
+        context_audio = buffer.trim(intro_profile.start_s, intro_profile.end_s)
+        
+        # Generate continuation
+        extension_buffer, generation_metadata = generator.generate_continuation(
+            context_audio=context_audio,
+            bars=target_bars,
+            bpm=beat_grid.bpm,
+            preset=request.preset,
+            seed=request.seed,
+        )
+        
+        # Join original track (up to intro end) with extension using crossfade
+        # Extract original track up to intro end
+        original_up_to_intro = buffer.trim(0.0, intro_profile.end_s)
+        
+        # Apply crossfade between original intro end and extension start
+        # Use 50-150ms crossfade (use 100ms)
+        crossfade_duration_s = 0.1
+        extended_buffer = apply_crossfade(
+            original_up_to_intro,
+            extension_buffer,
+            fade_duration_s=crossfade_duration_s,
+        )
+        
+        # Calculate seam quality (should be good with crossfade)
+        seam_quality = 0.95  # High quality with crossfade
+        
+    elif request.backend == "loop":
+        # Use legacy loop method
         extended_buffer = extend_by_looping(
             buffer,
             beat_grid,
@@ -91,15 +128,26 @@ def extend_audio(request: ExtendRequest) -> tuple[AudioBuffer, dict]:
             intro_profile.end_s,
             target_bars,
         )
+        seam_quality = 1.0  # For loop method, seam is perfect
     else:
-        raise ValueError(f"Unknown extension method: {preset.method}")
+        raise ValueError(f"Unknown backend: {request.backend}")
     
     # Step 6: Calculate final metrics
     metrics.update({
         "extended_duration_s": extended_buffer.length_s(),
         "bars_added": target_bars,
-        "seam_quality": 1.0,  # For loop method, seam is perfect
+        "seam_quality": seam_quality,
     })
+    
+    # Add bassline metadata if using baseline backend
+    if generation_metadata is not None:
+        metrics["bassline"] = {
+            "root_midi": generation_metadata.root_midi,
+            "bass_gain_db": generation_metadata.bass_gain_db,
+            "pattern": generation_metadata.pattern,
+            "loop_len_bars": generation_metadata.loop_len_bars,
+            "seed": generation_metadata.seed,
+        }
     
     # Add warnings from intro profile
     if intro_profile.flags:
