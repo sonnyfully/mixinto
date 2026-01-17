@@ -79,3 +79,8 @@ temp/
 # Project-specific
 *.pyc
 *.pyo
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/

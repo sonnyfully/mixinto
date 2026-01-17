@@ -15,6 +15,8 @@ dependencies = [
     "scipy",
     "typer",
     "pydantic",
+    "flask",
+    "flask-cors",
 ]
 
 [project.optional-dependencies]

@@ -37,14 +37,14 @@ def extend_audio(request: ExtendRequest) -> tuple[AudioBuffer, dict]:
     preset = get_preset(request.preset)
     
     # Step 1: Analyze audio
-    buffer, beat_grid, intro_profile = analyze_audio(
+    buffer, beat_grid, extendability_profile = analyze_audio(
         request.input_path,
         preset_name=request.preset,
     )
     
     # Step 2: Evaluate safety
     is_safe, refusal_reason = evaluate_safety(
-        intro_profile,
+        extendability_profile,
         beat_grid,
         preset,
     )
@@ -53,7 +53,10 @@ def extend_audio(request: ExtendRequest) -> tuple[AudioBuffer, dict]:
         "original_duration_s": buffer.length_s(),
         "extended_duration_s": buffer.length_s(),
         "bars_added": 0,
-        "mix_safety_score": intro_profile.mix_safety_score,
+        "mix_safety_score": extendability_profile.mix_safety_score,
+        "track_extendability": extendability_profile.track_extendability,
+        "coverage": extendability_profile.coverage,
+        "confidence": extendability_profile.confidence,
         "seam_quality": 1.0,
         "warnings": [],
         "errors": [],
@@ -91,8 +94,8 @@ def extend_audio(request: ExtendRequest) -> tuple[AudioBuffer, dict]:
         # Use baseline generator
         generator = BaselineGenerator()
         
-        # Extract context window (intro segment)
-        context_audio = buffer.trim(intro_profile.start_s, intro_profile.end_s)
+        # Extract context window (best segment from extendability profile)
+        context_audio = buffer.trim(extendability_profile.start_s, extendability_profile.end_s)
         
         # Generate continuation
         extension_buffer, generation_metadata = generator.generate_continuation(
@@ -103,9 +106,9 @@ def extend_audio(request: ExtendRequest) -> tuple[AudioBuffer, dict]:
             seed=request.seed,
         )
         
-        # Join original track (up to intro end) with extension using crossfade
-        # Extract original track up to intro end
-        original_up_to_intro = buffer.trim(0.0, intro_profile.end_s)
+        # Join original track (up to segment end) with extension using crossfade
+        # Extract original track up to segment end
+        original_up_to_intro = buffer.trim(0.0, extendability_profile.end_s)
         
         # Apply crossfade between original intro end and extension start
         # Use 50-150ms crossfade (use 100ms)
@@ -124,8 +127,8 @@ def extend_audio(request: ExtendRequest) -> tuple[AudioBuffer, dict]:
         extended_buffer = extend_by_looping(
             buffer,
             beat_grid,
-            intro_profile.start_s,
-            intro_profile.end_s,
+            extendability_profile.start_s,
+            extendability_profile.end_s,
             target_bars,
         )
         seam_quality = 1.0  # For loop method, seam is perfect
@@ -149,8 +152,27 @@ def extend_audio(request: ExtendRequest) -> tuple[AudioBuffer, dict]:
             "seed": generation_metadata.seed,
         }
     
-    # Add warnings from intro profile
-    if intro_profile.flags:
-        metrics["warnings"] = intro_profile.flags.copy()
+    # Add warnings from extendability profile
+    if extendability_profile.flags:
+        metrics["warnings"] = extendability_profile.flags.copy()
+    
+    # Add segment information
+    metrics["best_segment"] = {
+        "start_s": extendability_profile.best_segment.segment.start_s,
+        "end_s": extendability_profile.best_segment.segment.end_s,
+        "bar_count": extendability_profile.best_segment.segment.bar_count,
+        "score": extendability_profile.best_segment.final_score,
+    }
+    
+    if len(extendability_profile.top_segments) > 1:
+        metrics["top_segments"] = [
+            {
+                "start_s": seg.segment.start_s,
+                "end_s": seg.segment.end_s,
+                "bar_count": seg.segment.bar_count,
+                "score": seg.final_score,
+            }
+            for seg in extendability_profile.top_segments[:3]  # Top 3
+        ]
     
     return (extended_buffer, metrics)

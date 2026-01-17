@@ -2,19 +2,21 @@
 import numpy as np
 
 from mixinto.core.presets import get_preset
-from mixinto.utils.types import BeatGrid, IntroProfile, Preset
+from mixinto.utils.types import BeatGrid, IntroProfile, ExtendabilityProfile, Preset
 
 
 def evaluate_safety(
-    intro_profile: IntroProfile,
+    profile: IntroProfile | ExtendabilityProfile,
     beat_grid: BeatGrid,
     preset: Preset | str,
 ) -> tuple[bool, str | None]:
     """
     Evaluate whether a track is safe to extend based on preset criteria.
     
+    Supports both legacy IntroProfile and new ExtendabilityProfile.
+    
     Args:
-        intro_profile: IntroProfile with analysis results
+        profile: IntroProfile or ExtendabilityProfile with analysis results
         beat_grid: BeatGrid with beat information
         preset: Preset object or name
     
@@ -27,19 +29,27 @@ def evaluate_safety(
     if isinstance(preset, str):
         preset = get_preset(preset)
     
-    # Check mix safety score
-    if intro_profile.mix_safety_score < preset.min_mix_safety_score:
+    # Check mix safety score (works for both profile types via properties)
+    if profile.mix_safety_score < preset.min_mix_safety_score:
         return (
             False,
-            f"Mix safety score too low: {intro_profile.mix_safety_score:.2f} "
+            f"Mix safety score too low: {profile.mix_safety_score:.2f} "
             f"(minimum: {preset.min_mix_safety_score:.2f})",
         )
     
     # Check vocal presence
-    if intro_profile.vocal_presence > preset.max_vocal_presence:
+    # Note: For ExtendabilityProfile, vocal_presence is actually vocal_penalty (inverted)
+    # So we need to handle this differently
+    if isinstance(profile, ExtendabilityProfile):
+        # Use the actual vocal presence from the best segment
+        vocal_presence = 1.0 - profile.best_segment.vocal_penalty
+    else:
+        vocal_presence = profile.vocal_presence
+    
+    if vocal_presence > preset.max_vocal_presence:
         return (
             False,
-            f"Vocal presence too high: {intro_profile.vocal_presence:.2f} "
+            f"Vocal presence too high: {vocal_presence:.2f} "
             f"(maximum: {preset.max_vocal_presence:.2f})",
         )
     
@@ -58,7 +68,7 @@ def evaluate_safety(
     ]
     
     for flag in critical_flags:
-        if flag in intro_profile.flags:
+        if flag in profile.flags:
             return (
                 False,
                 f"Critical issue detected: {flag}",

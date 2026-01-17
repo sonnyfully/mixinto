@@ -75,6 +75,102 @@ class IntroProfile:
     mix_safety_score: float
     flags: list[str]
 
+
+@dataclass
+class FeatureTimeline:
+    """Per-bar/per-window feature timeline across the track."""
+    bar_count: int
+    bar_start_times_s: list[float]
+    tempo_confidence: list[float]
+    rhythm_stability: list[float]
+    spectral_stability: list[float]
+    energy_consistency: list[float]
+    vocal_presence: list[float]
+    loop_seam_score: list[float]  # NEW: loopability score per window
+
+
+@dataclass
+class SegmentCandidate:
+    """A candidate segment for extension."""
+    start_bar: int
+    end_bar: int
+    start_s: float
+    end_s: float
+    bar_count: int
+
+
+@dataclass
+class SegmentScore:
+    """Scoring details for a segment candidate."""
+    segment: SegmentCandidate
+    loopability: float
+    tempo_confidence: float
+    rhythm_stability: float
+    spectral_stability: float
+    energy_consistency: float
+    vocal_penalty: float
+    final_score: float
+    flags: list[str]
+    component_breakdown: dict[str, float]  # Detailed breakdown for debugging
+
+
+@dataclass
+class ExtendabilityProfile:
+    """Segment-aware extendability profile replacing IntroProfile."""
+    # Track-level summary
+    track_extendability: float  # max(segment_score) over all candidates
+    coverage: int  # number of viable segments (score >= threshold)
+    confidence: float  # confidence in the top segment
+    
+    # Top-K segments
+    top_segments: list[SegmentScore]  # Sorted by score (best first)
+    
+    # Feature timeline (for visualization/debugging)
+    feature_timeline: FeatureTimeline | None
+    
+    # Best segment (for backward compatibility)
+    best_segment: SegmentScore
+    
+    # Legacy compatibility fields (derived from best_segment)
+    @property
+    def start_s(self) -> float:
+        return self.best_segment.segment.start_s
+    
+    @property
+    def end_s(self) -> float:
+        return self.best_segment.segment.end_s
+    
+    @property
+    def mix_safety_score(self) -> float:
+        return self.best_segment.final_score
+    
+    @property
+    def spectral_stability(self) -> float:
+        return self.best_segment.spectral_stability
+    
+    @property
+    def rhythm_stability(self) -> float:
+        return self.best_segment.rhythm_stability
+    
+    @property
+    def vocal_presence(self) -> float:
+        # vocal_penalty is (1 - vocal_presence), so invert it back
+        return 1.0 - self.best_segment.vocal_penalty
+    
+    @property
+    def energy_mean(self) -> float:
+        # Approximate from component breakdown if available
+        return self.best_segment.component_breakdown.get("energy_mean", 0.0)
+    
+    @property
+    def energy_std(self) -> float:
+        # Approximate from component breakdown if available
+        return self.best_segment.component_breakdown.get("energy_std", 0.0)
+    
+    @property
+    def flags(self) -> list[str]:
+        return self.best_segment.flags
+
 class ExtendRequest(BaseModel):
     input_path: str
     preset: str = "dj_safe"
@@ -126,6 +222,33 @@ class AnalysisConfig(BaseModel):
     rhythm_tempo_drift_threshold: float = Field(default=2.0, ge=0.0)
     energy_variance_threshold: float = Field(default=0.2, ge=0.0, le=1.0)
     
+    # Segment-aware analysis (NEW)
+    segment_candidate_lengths: list[int] = Field(default_factory=lambda: [8, 16, 32], description="Bar lengths for candidate segments")
+    segment_hop_bars: int = Field(default=1, ge=1, description="Hop size in bars for candidate generation")
+    segment_scoring_window_bars: int = Field(default=4, ge=1, description="Window size in bars for rolling feature aggregation")
+    segment_base_resolution_bars: int = Field(default=1, ge=1, description="Base resolution for per-bar feature extraction")
+    segment_search_region: str = Field(default="anywhere", description="Search region: 'anywhere', 'first_N_bars', 'pre_vocal_only'")
+    segment_search_first_n_bars: int = Field(default=64, ge=8, description="If search_region='first_N_bars', use this many bars")
+    segment_viable_threshold: float = Field(default=0.5, ge=0.0, le=1.0, description="Minimum score for a segment to be considered viable")
+    segment_top_k: int = Field(default=5, ge=1, description="Number of top segments to return")
+    
+    # Segment scoring weights (NEW - replaces old mix safety weights)
+    segment_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "loopability": 0.25,
+            "tempo_confidence": 0.20,
+            "rhythm_stability": 0.20,
+            "spectral_stability": 0.20,
+            "energy_consistency": 0.10,
+            "vocal_penalty": 0.05,
+        },
+        description="Weights for segment scoring components"
+    )
+    
+    # Loopability scoring
+    loopability_seam_window_ms: float = Field(default=50.0, ge=0.0, description="Window in ms for seam quality check")
+    loopability_min_score: float = Field(default=0.3, ge=0.0, le=1.0, description="Minimum loopability score to consider")
+    
     @model_validator(mode="after")
     def validate_tempo_range(self) -> Self:
         if self.tempo_min >= self.tempo_max:
@@ -138,6 +261,14 @@ class AnalysisConfig(BaseModel):
             raise ValueError("intro_stability_weights must have exactly 3 elements")
         if abs(sum(self.intro_stability_weights) - 1.0) > 0.01:
             raise ValueError("intro_stability_weights must sum to approximately 1.0")
+        return self
+    
+    @model_validator(mode="after")
+    def validate_segment_weights(self) -> Self:
+        """Validate that segment weights sum to approximately 1.0."""
+        total = sum(self.segment_weights.values())
+        if abs(total - 1.0) > 0.01:
+            raise ValueError(f"segment_weights must sum to approximately 1.0, got {total:.3f}")
         return self
 
 
